@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipecat 语音助手 Demo</title>
+    <script crossorigin src="https://unpkg.com/@daily-co/daily-js@0.59.0/dist/daily-iframe.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+                         'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            text-align: center;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .status {
+            background: #f5f5f5;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.idle {
+            background: #95a5a6;
+        }
+
+        .status-indicator.starting {
+            background: #f39c12;
+        }
+
+        .status-indicator.connected {
+            background: #27ae60;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .status-text {
+            font-size: 1.2em;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .button-container {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            border-radius: 50px;
+            font-size: 1.1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        button:disabled:hover {
+            transform: none;
+        }
+
+        .stop-button {
+            background: linear-gradient(135deg, #fc4a1a 0%, #f7b733 100%);
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            height: 0;
+            padding-bottom: 56.25%; /* 16:9 比例 */
+            background: #000;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .video-container.active {
+            display: block;
+        }
+
+        #call-frame {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        .instructions {
+            background: #e8f4fd;
+            border-left: 4px solid #3498db;
+            padding: 20px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+
+        .instructions h3 {
+            color: #2980b9;
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .instructions li {
+            margin-bottom: 10px;
+        }
+
+        .instructions code {
+            background: #fff;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            color: #e74c3c;
+        }
+
+        .error {
+            background: #fee;
+            border-left: 4px solid #e74c3c;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+            color: #c0392b;
+            display: none;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            display: none;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Pipecat 语音助手</h1>
+        <p class="subtitle">基于 AI 的实时语音对话演示</p>
+
+        <div class="status">
+            <span class="status-indicator idle" id="status-indicator"></span>
+            <span class="status-text" id="status-text">准备就绪</span>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>正在启动语音助手...</p>
+        </div>
+
+        <div class="button-container">
+            <button id="start-button" onclick="startCall()">
+                🎤 开始对话
+            </button>
+            <button id="stop-button" onclick="endCall()" disabled class="stop-button">
+                ⏹️ 结束对话
+            </button>
+        </div>
+
+        <div class="video-container" id="video-container">
+            <iframe id="call-frame" allow="camera; microphone; autoplay; display-capture"></iframe>
+        </div>
+
+        <div class="error" id="error-message"></div>
+
+        <div class="instructions">
+            <h3>📝 使用说明</h3>
+            <ol>
+                <li>点击 <strong>"开始对话"</strong> 按钮启动语音助手</li>
+                <li>允许浏览器访问您的麦克风</li>
+                <li>等待几秒钟，助手会主动问候您</li>
+                <li>开始说话，AI 会听到并回应您</li>
+                <li>对话结束后点击 <strong>"结束对话"</strong></li>
+            </ol>
+            <br>
+            <p><strong>💡 提示：</strong>说话时保持自然语速，AI 会自动检测您何时说完。</p>
+        </div>
+    </div>
+
+    <script>
+        let callFrame = null;
+        let roomName = null;
+
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const startButton = document.getElementById('start-button');
+        const stopButton = document.getElementById('stop-button');
+        const videoContainer = document.getElementById('video-container');
+        const errorMessage = document.getElementById('error-message');
+        const loading = document.getElementById('loading');
+
+        function updateStatus(status, text) {
+            statusIndicator.className = `status-indicator ${status}`;
+            statusText.textContent = text;
+        }
+
+        function showError(message) {
+            errorMessage.textContent = '❌ ' + message;
+            errorMessage.classList.add('show');
+            setTimeout(() => {
+                errorMessage.classList.remove('show');
+            }, 5000);
+        }
+
+        async function startCall() {
+            try {
+                // 显示加载状态
+                loading.classList.add('show');
+                startButton.disabled = true;
+                updateStatus('starting', '正在启动...');
+
+                // 调用后端 API 启动 bot
+                const response = await fetch('/api/start-bot', {
+                    method: 'POST',
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || '启动失败');
+                }
+
+                const data = await response.json();
+                roomName = data.room_name;
+
+                // 创建 Daily 通话
+                callFrame = window.DailyIframe.createFrame(
+                    document.getElementById('call-frame'),
+                    {
+                        showLeaveButton: false,
+                        showFullscreenButton: true,
+                        iframeStyle: {
+                            width: '100%',
+                            height: '100%',
+                            border: '0',
+                        }
+                    }
+                );
+
+                // 监听事件
+                callFrame.on('joined-meeting', () => {
+                    console.log('已加入会议');
+                    loading.classList.remove('show');
+                    updateStatus('connected', '已连接 - 可以开始对话了！');
+                    videoContainer.classList.add('active');
+                    stopButton.disabled = false;
+                });
+
+                callFrame.on('left-meeting', () => {
+                    console.log('已离开会议');
+                    endCall();
+                });
+
+                callFrame.on('error', (error) => {
+                    console.error('Daily 错误:', error);
+                    showError('连接错误: ' + error.message);
+                    endCall();
+                });
+
+                // 加入房间
+                await callFrame.join({
+                    url: data.room_url,
+                    token: data.token,
+                    userName: '用户',
+                });
+
+            } catch (error) {
+                console.error('启动失败:', error);
+                showError(error.message);
+                loading.classList.remove('show');
+                startButton.disabled = false;
+                updateStatus('idle', '准备就绪');
+            }
+        }
+
+        async function endCall() {
+            try {
+                if (callFrame) {
+                    await callFrame.leave();
+                    callFrame.destroy();
+                    callFrame = null;
+                }
+
+                if (roomName) {
+                    // 停止 bot
+                    await fetch(`/api/stop-bot/${roomName}`, {
+                        method: 'POST',
+                    });
+                    roomName = null;
+                }
+
+                videoContainer.classList.remove('active');
+                startButton.disabled = false;
+                stopButton.disabled = true;
+                updateStatus('idle', '准备就绪');
+
+            } catch (error) {
+                console.error('结束通话失败:', error);
+                showError('结束通话时出错');
+            }
+        }
+
+        // 页面卸载时清理
+        window.addEventListener('beforeunload', () => {
+            if (callFrame) {
+                endCall();
+            }
+        });
+    </script>
+</body>
+</html>
