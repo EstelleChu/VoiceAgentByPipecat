@@ -1,5 +1,17 @@
-# Pipecat 核心依赖
-pipecat-ai[daily,openai,silero]>=0.0.45
+# Pipecat 核心依赖（包含 Gemini, Deepgram, ElevenLabs, Twilio 支持）
+pipecat-ai[google,deepgram,elevenlabs,twilio,silero]>=0.0.45
+
+# Google Gemini
+google-generativeai>=0.3.0
+
+# Deepgram SDK
+deepgram-sdk>=3.0.0
+
+# ElevenLabs SDK
+elevenlabs>=0.2.0
+
+# Twilio (用于 SIP)
+twilio>=8.0.0
 
 # Web 服务器
 fastapi>=0.104.0

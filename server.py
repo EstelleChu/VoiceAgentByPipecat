@@ -1,6 +1,6 @@
 """
-FastAPI 服务器 - 管理语音对话会话
-提供 Web 界面和 API 端点
+FastAPI 服务器 - Twilio SIP 版本
+管理通过 Twilio 的 SIP 语音对话会话
 """
 
 import os
@@ -10,12 +10,11 @@ import subprocess
 from typing import Optional
 from datetime import datetime
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-import aiohttp
+from twilio.twiml.voice_response import VoiceResponse, Connect, Stream
 from loguru import logger
 
 # 加载环境变量
@@ -26,7 +25,7 @@ logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
 # 创建 FastAPI 应用
-app = FastAPI(title="Pipecat 语音助手 Demo")
+app = FastAPI(title="Pipecat 语音助手 Demo - SIP 版本")
 
 # 添加 CORS 中间件
 app.add_middleware(
@@ -41,164 +40,133 @@ app.add_middleware(
 bot_processes = {}  # 存储运行中的 bot 进程
 
 
-async def create_daily_room() -> dict:
-    """创建 Daily.co 房间"""
-    daily_api_key = os.getenv("DAILY_API_KEY")
-
-    if not daily_api_key:
-        raise ValueError("需要设置 DAILY_API_KEY 环境变量")
-
-    url = "https://api.daily.co/v1/rooms"
-    headers = {
-        "Authorization": f"Bearer {daily_api_key}",
-        "Content-Type": "application/json"
-    }
-
-    # 配置房间属性
-    data = {
-        "properties": {
-            "enable_chat": True,
-            "enable_emoji_reactions": True,
-            "start_video_off": True,
-            "start_audio_off": False,
-            "enable_screenshare": False,
-            "enable_advanced_chat": False,
-            "max_participants": 2,
-        }
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=data, headers=headers) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                logger.error(f"创建房间失败: {error_text}")
-                raise HTTPException(status_code=500, detail=f"创建房间失败: {error_text}")
-
-            room_info = await response.json()
-            logger.info(f"房间创建成功: {room_info['name']}")
-            return room_info
-
-
-async def create_daily_token(room_name: str, is_owner: bool = False) -> str:
-    """为房间创建访问令牌"""
-    daily_api_key = os.getenv("DAILY_API_KEY")
-
-    url = "https://api.daily.co/v1/meeting-tokens"
-    headers = {
-        "Authorization": f"Bearer {daily_api_key}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "properties": {
-            "room_name": room_name,
-            "is_owner": is_owner,
-        }
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=data, headers=headers) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                logger.error(f"创建令牌失败: {error_text}")
-                raise HTTPException(status_code=500, detail=f"创建令牌失败: {error_text}")
-
-            token_info = await response.json()
-            return token_info["token"]
-
-
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    """返回主页 HTML"""
+    """返回主页 HTML - SIP 版本"""
     try:
         with open("index.html", "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
         return HTMLResponse(
-            content="<h1>未找到 index.html 文件</h1><p>请确保 index.html 在同一目录</p>",
-            status_code=404
+            content="""
+            <h1>Pipecat 语音助手 - SIP 版本</h1>
+            <p>这是一个通过 Twilio SIP 线路的语音助手演示。</p>
+            <h2>技术栈：</h2>
+            <ul>
+                <li>🧠 模型: Google Gemini 2.0 Flash Lite</li>
+                <li>🎤 ASR: Deepgram Nova 2</li>
+                <li>🔊 TTS: ElevenLabs (印度口音英语)</li>
+                <li>📞 Telephony: Twilio SIP</li>
+            </ul>
+            <h2>配置说明：</h2>
+            <p>请查看 README.md 了解如何配置 Twilio webhook。</p>
+            """,
+            status_code=200
         )
 
 
-@app.post("/api/start-bot")
-async def start_bot():
+@app.post("/incoming-call")
+async def handle_incoming_call(request: Request):
     """
-    启动语音助手
-    创建 Daily 房间，启动 bot 进程，返回房间信息
+    处理 Twilio 来电 webhook
+    当有电话打入时，Twilio 会调用这个端点
     """
-    try:
-        # 创建房间
-        logger.info("正在创建 Daily 房间...")
-        room_info = await create_daily_room()
+    logger.info("📞 收到来电")
 
-        room_url = room_info["url"]
-        room_name = room_info["name"]
+    # 获取服务器配置
+    host = os.getenv("HOST", "0.0.0.0")
+    port = os.getenv("PORT", 7860)
+    public_url = os.getenv("PUBLIC_URL", f"http://{host}:{port}")
 
-        # 为 bot 创建令牌
-        logger.info("正在创建 bot 令牌...")
-        bot_token = await create_daily_token(room_name, is_owner=True)
+    # 创建 TwiML 响应
+    response = VoiceResponse()
 
-        # 为用户创建令牌
-        logger.info("正在创建用户令牌...")
-        user_token = await create_daily_token(room_name, is_owner=False)
+    # 连接到 WebSocket 流
+    connect = Connect()
+    stream = Stream(url=f"{public_url}/media-stream")
+    connect.append(stream)
+    response.append(connect)
 
+    logger.info(f"TwiML 响应: {str(response)}")
+
+    return Response(content=str(response), media_type="application/xml")
+
+
+@app.api_route("/media-stream", methods=["GET", "POST"])
+async def handle_media_stream(request: Request):
+    """
+    处理 Twilio 媒体流 WebSocket
+    这里启动 bot 来处理音频流
+    """
+    logger.info("🎵 媒体流连接")
+
+    # 获取通话信息
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+
+    if call_sid and call_sid not in bot_processes:
         # 启动 bot 进程
-        logger.info(f"正在启动 bot 进程: {room_url}")
-        bot_process = subprocess.Popen(
-            [sys.executable, "bot.py", room_url, bot_token],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        logger.info(f"🤖 为通话 {call_sid} 启动 bot")
 
-        # 存储进程信息
-        bot_processes[room_name] = {
-            "process": bot_process,
-            "room_url": room_url,
-            "started_at": datetime.now().isoformat()
-        }
+        try:
+            # 获取 Twilio 配置
+            twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+            twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+            twilio_phone_number = os.getenv("TWILIO_PHONE_NUMBER")
 
-        logger.info(f"✅ Bot 启动成功！房间: {room_name}")
+            if not all([twilio_account_sid, twilio_auth_token, twilio_phone_number]):
+                logger.error("❌ 缺少 Twilio 配置")
+                raise HTTPException(status_code=500, detail="缺少 Twilio 配置")
 
-        return JSONResponse({
-            "room_url": room_url,
-            "room_name": room_name,
-            "token": user_token,
-            "bot_started": True,
-            "message": "语音助手已启动，正在准备中..."
-        })
+            # 启动 bot 进程
+            bot_process = subprocess.Popen(
+                [sys.executable, "bot.py", call_sid],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
-    except Exception as e:
-        logger.error(f"启动 bot 失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"启动失败: {str(e)}")
+            # 存储进程信息
+            bot_processes[call_sid] = {
+                "process": bot_process,
+                "call_sid": call_sid,
+                "started_at": datetime.now().isoformat()
+            }
+
+            logger.info(f"✅ Bot 已启动: {call_sid}")
+
+        except Exception as e:
+            logger.error(f"❌ 启动 bot 失败: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"启动 bot 失败: {str(e)}")
+
+    return Response(content="", media_type="text/plain")
 
 
-@app.post("/api/stop-bot/{room_name}")
-async def stop_bot(room_name: str):
-    """停止指定房间的 bot"""
-    if room_name not in bot_processes:
-        raise HTTPException(status_code=404, detail="未找到该房间的 bot")
+@app.post("/call-status")
+async def handle_call_status(request: Request):
+    """
+    处理通话状态 webhook
+    当通话状态改变时，Twilio 会调用这个端点
+    """
+    form_data = await request.form()
+    call_sid = form_data.get("CallSid")
+    call_status = form_data.get("CallStatus")
 
-    try:
-        bot_info = bot_processes[room_name]
-        process = bot_info["process"]
+    logger.info(f"📞 通话状态更新: {call_sid} - {call_status}")
 
-        # 终止进程
-        process.terminate()
-        process.wait(timeout=5)
+    # 如果通话结束，清理 bot 进程
+    if call_status in ["completed", "failed", "busy", "no-answer"]:
+        if call_sid in bot_processes:
+            try:
+                bot_info = bot_processes[call_sid]
+                process = bot_info["process"]
+                process.terminate()
+                process.wait(timeout=5)
+                del bot_processes[call_sid]
+                logger.info(f"✅ Bot 已清理: {call_sid}")
+            except Exception as e:
+                logger.error(f"❌ 清理 bot 失败: {str(e)}")
 
-        # 删除记录
-        del bot_processes[room_name]
-
-        logger.info(f"Bot 已停止: {room_name}")
-
-        return JSONResponse({
-            "success": True,
-            "message": f"Bot 已停止: {room_name}"
-        })
-
-    except Exception as e:
-        logger.error(f"停止 bot 失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"停止失败: {str(e)}")
+    return Response(content="", media_type="text/plain")
 
 
 @app.get("/api/health")
@@ -207,23 +175,75 @@ async def health_check():
     return JSONResponse({
         "status": "healthy",
         "active_bots": len(bot_processes),
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "config": {
+            "model": "Gemini 2.0 Flash Lite",
+            "asr": "Deepgram Nova 2",
+            "tts": "ElevenLabs (印度口音)",
+            "telephony": "Twilio SIP"
+        }
     })
+
+
+@app.get("/api/active-calls")
+async def get_active_calls():
+    """获取当前活跃的通话列表"""
+    calls = []
+    for call_sid, bot_info in bot_processes.items():
+        calls.append({
+            "call_sid": call_sid,
+            "started_at": bot_info["started_at"],
+            "status": "active"
+        })
+
+    return JSONResponse({
+        "count": len(calls),
+        "calls": calls
+    })
+
+
+@app.post("/api/hangup/{call_sid}")
+async def hangup_call(call_sid: str):
+    """手动挂断指定的通话"""
+    if call_sid not in bot_processes:
+        raise HTTPException(status_code=404, detail="未找到该通话")
+
+    try:
+        bot_info = bot_processes[call_sid]
+        process = bot_info["process"]
+
+        # 终止进程
+        process.terminate()
+        process.wait(timeout=5)
+
+        # 删除记录
+        del bot_processes[call_sid]
+
+        logger.info(f"✅ 通话已挂断: {call_sid}")
+
+        return JSONResponse({
+            "success": True,
+            "message": f"通话已挂断: {call_sid}"
+        })
+
+    except Exception as e:
+        logger.error(f"❌ 挂断失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"挂断失败: {str(e)}")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """关闭时清理所有 bot 进程"""
-    logger.info("正在关闭服务器，清理资源...")
+    logger.info("🛑 正在关闭服务器，清理资源...")
 
-    for room_name, bot_info in bot_processes.items():
+    for call_sid, bot_info in bot_processes.items():
         try:
             process = bot_info["process"]
             process.terminate()
             process.wait(timeout=5)
-            logger.info(f"已停止 bot: {room_name}")
+            logger.info(f"✅ 已停止 bot: {call_sid}")
         except Exception as e:
-            logger.error(f"清理 bot 失败 {room_name}: {e}")
+            logger.error(f"❌ 清理 bot 失败 {call_sid}: {e}")
 
 
 if __name__ == "__main__":
@@ -233,7 +253,23 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", 7860))
 
-    logger.info(f"🚀 启动服务器: http://{host}:{port}")
+    logger.info("=" * 60)
+    logger.info("🚀 Pipecat 语音助手服务器 - SIP 版本")
+    logger.info("=" * 60)
+    logger.info(f"📍 服务器地址: http://{host}:{port}")
+    logger.info("")
+    logger.info("📋 技术栈:")
+    logger.info("   🧠 模型: Gemini 2.0 Flash Lite")
+    logger.info("   🎤 ASR: Deepgram Nova 2")
+    logger.info("   🔊 TTS: ElevenLabs (印度口音)")
+    logger.info("   📞 Telephony: Twilio SIP")
+    logger.info("")
+    logger.info("🔗 Webhook 端点:")
+    logger.info(f"   - 来电: http://{host}:{port}/incoming-call")
+    logger.info(f"   - 状态: http://{host}:{port}/call-status")
+    logger.info("")
+    logger.info("💡 请在 Twilio 控制台配置这些 webhook URL")
+    logger.info("=" * 60)
 
     # 启动服务器
     uvicorn.run(
